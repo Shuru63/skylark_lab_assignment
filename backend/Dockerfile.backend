@@ -1,0 +1,29 @@
+# Backend (Node.js + TypeScript + Hono + Prisma MongoDB)
+FROM node:18-bullseye-slim AS deps
+WORKDIR /app
+
+# Copy dependencies
+COPY package.json package-lock.json prisma/ ./
+RUN npm ci --production=false
+
+FROM deps AS builder
+WORKDIR /app
+COPY . .
+# Generate Prisma client for MongoDB
+RUN npx prisma generate
+# Build TypeScript -> dist
+RUN npm run build
+
+FROM node:18-bullseye-slim AS runtime
+WORKDIR /app
+
+# Copy node_modules and dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY package.json ./
+
+ENV NODE_ENV=production
+ENV PORT=5000
+EXPOSE 5000
+
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,32 @@
+# Worker (Go + OpenCV + FFmpeg + gocv)
+FROM golang:1.20-bullseye AS builder
+
+# Install system deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libopencv-dev ffmpeg ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Enable CGO for gocv
+ENV CGO_ENABLED=1
+RUN go build -v -o /worker ./cmd/worker
+
+# Runtime image
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libopencv-dev ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /worker /usr/local/bin/worker
+WORKDIR /app
+
+EXPOSE 9000
+
+RUN useradd -m -u 1000 appuser && chown -R appuser /app
+USER appuser
+
+ENTRYPOINT ["/usr/local/bin/worker"]

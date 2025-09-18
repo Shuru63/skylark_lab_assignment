@@ -1,0 +1,68 @@
+# Node.js / TypeScript
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# VSCode
+.vscode/
+.history/
+
+# Logs
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# TypeScript
+*.tsbuildinfo
+
+# React / Vite
+.vite/
+*.local
+*.cache/
+*.temp/
+coverage/
+*.test.ts
+*.test.tsx
+
+# Golang
+*.exe
+*.out
+*.test
+bin/
+vendor/
+pkg/
+
+# GoLand / IDE files
+.idea/
+*.iml
+
+# MongoDB
+dump/
+*.bson
+*.gz
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+*.env.override

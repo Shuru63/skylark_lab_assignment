@@ -1,0 +1,69 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "mongodb+srv://shubhamkumargarg63_db_user:AWZjJ55u4fn8Psgf@camera.0wnrpmz.mongodb.net/skylark_db?retryWrites=true&w=majority"
+      JWT_SECRET: "CHANGE_THIS_SECRET"
+      REDIS_URL: "redis://redis:6379"
+      FRONTEND_URL: "http://localhost:5173/"
+      PORT: 5000
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 10s
+      retries: 5
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: ../Dockerfile.worker
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      BACKEND_URL: "http://backend:5000"
+      BACKEND_JWT: "${WORKER_JWT:-}"
+      WORKER_CONCURRENCY: "4"
+      REDIS_URL: "redis://redis:6379"
+    volumes:
+      - ./worker/config:/app/config:ro
+    restart: always
+    ports:
+      - "9000:9000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE: "http://localhost:5000"
+      VITE_WEBSOCKET_URL: "ws://localhost:5000/ws"
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  redis_data:

@@ -1,0 +1,293 @@
+# Microservices WebRTC Face-Detection Dashboard
+
+> **Full stack microservices project**: register RTSP cameras, view live WebRTC streams with real-time face-detection overlays, and receive instant alerts via WebSockets.
+
+---
+
+## Table of contents
+
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Tech stack](#tech-stack)
+4. [Repository layout](#repository-layout)
+5. [Prerequisites](#prerequisites)
+6. [Environment variables](#environment-variables)
+7. [Getting started (local development)](#getting-started-local-development)
+
+   * Frontend
+   * Backend API
+   * Worker
+   * MongoDB
+8. [How it works (high level)](#how-it-works-high-level)
+9. [API overview](#api-overview)
+10. [WebSocket / Realtime events](#websocket--realtime-events)
+11. [Camera worker behavior & reliability](#camera-worker-behavior--reliability)
+12. [UI features & runtime controls](#ui-features--runtime-controls)
+13. [Testing](#testing)
+14. [Deployment notes](#deployment-notes)
+15. [Troubleshooting & tips](#troubleshooting--tips)
+16. [Roadmap / Extras](#roadmap--extras)
+17. [License](#license)
+
+---
+
+## Overview
+
+This project provides a dashboard where authenticated users can register RTSP cameras (name, location, RTSP URL), start/stop streams, and watch them in-browser via WebRTC. A separate worker service consumes RTSP streams, performs face detection on frames, overlays bounding boxes, publishes processed frames to MediaMTX (or other WebRTC sink), and pushes detection alerts to the backend. The frontend subscribes to alerts over WebSockets and shows per-camera recent alerts.
+
+This README assumes you use **MongoDB** for persistence (via Prisma's MongoDB connector). If you prefer Mongoose instead, the shape of the API is the same — swap the ORM layer accordingly.
+
+---
+
+## Architecture
+
+* **Frontend (React + TypeScript + Vite + MUI/Tailwind)**: UI, authentication, camera management, grid of camera tiles, websocket subscription.
+* **Backend API (TypeScript + Hono)**: Auth (JWT), camera management endpoints, alert ingestion, websocket gateway for pushing alerts.
+* **Worker (Golang + Gin)**: Manages RTSP reading (FFmpeg/OpenCV), face detection (go-face or other), overlays frames (gocv), publishes to MediaMTX, and POSTs alerts to backend. Supports concurrent streams and reconnection/backoff.
+* **MongoDB**: Stores users, cameras, alerts, and config.
+
+---
+
+## Tech stack
+
+* Frontend: React (TypeScript), Vite, MUI, Tailwind CSS, WebRTC APIs, socket.io-client (or native WebSocket)
+* Backend API: TypeScript, Hono framework, JWT auth, Prisma with MongoDB connector
+* Worker: Go, Gin (HTTP admin endpoints), FFmpeg or GStreamer, gocv (OpenCV), go-face or equivalent
+* Media proxy: MediaMTX (recommended) or direct WebRTC
+* Database: MongoDB (Atlas or local)
+* Message Queue (optional): Redis / RabbitMQ / NATS (recommended for decoupling worker→API alert ingestion)
+
+---
+
+## Repository layout (suggested)
+
+```
+repo-root/
+├─ frontend/                # React + TypeScript + Vite
+├─ backend/                 # Hono + TypeScript + Prisma (MongoDB)
+├─ worker/                  # Go worker that handles RTSP -> face detection -> publish
+├─ infra/                   # docker-compose / k8s manifests (mediaMTX, mongo, redis)
+└─ README.md
+```
+
+---
+
+## Prerequisites
+
+* Node.js (>=18)
+* pnpm / npm / yarn
+* Go (>=1.20)
+* FFmpeg installed on worker machine (or GStreamer)
+* OpenCV (for gocv) setup for Go worker
+* MongoDB server or Atlas cluster
+* Docker & docker-compose (highly recommended for local dev)
+
+---
+
+## Environment variables
+
+Create `.env` files in `backend/` and `frontend/` as required.
+
+### Backend (`backend/.env`)
+
+```
+PORT=4000
+JWT_SECRET=your_jwt_secret_here
+MONGODB_URI=mongodb://localhost:27017/webrtc_face_db
+MEDIA_BASE_URL=http://localhost:8080   # for snapshots (optional)
+WEBSOCKET_SECRET=some_secret_if_needed
+ALERT_POST_AUTH_TOKEN=internal_worker_token  # used to authenticate worker -> backend POSTs
+```
+
+### Frontend (`frontend/.env`)
+
+```
+VITE_API_BASE=http://localhost:4000
+VITE_WS_URL=ws://localhost:4000/ws
+VITE_MEDIA_SIGNALING=http://localhost:8554  # mediaMTX api / signaling endpoint if used
+```
+
+### Worker (`worker/.env`)
+
+```
+BACKEND_API=http://localhost:4000
+ALERT_API_KEY=internal_worker_token
+MEDIAMTX_URL=rtsp://127.0.0.1:8554  # configure per deployment
+DEFAULT_FPS=10
+```
+
+---
+
+## Getting started (local development)
+
+**Recommended:** use `docker-compose` in `infra/` to bring up MongoDB, MediaMTX, Redis (optional).
+
+### 1) Start MongoDB (docker)
+
+```bash
+# from infra/ or a local compose file
+docker-compose up -d mongo
+```
+
+### 2) Backend
+
+```bash
+cd backend
+cp .env.example .env   # edit .env
+pnpm install
+pnpm run migrate       # prisma generate/migrate for MongoDB
+pnpm run dev           # starts Hono server
+```
+
+> Note: For Prisma + MongoDB, `prisma migrate` behaves differently; follow Prisma docs for MongoDB. Alternatively scaffold using Prisma `db push`.
+
+### 3) Frontend
+
+```bash
+cd frontend
+cp .env.example .env
+pnpm install
+pnpm run dev
+```
+
+Open: `http://localhost:5173`
+
+### 4) MediaMTX (optional)
+
+Run mediaMTX (docker image by aler9/mediamtx). There are sample configs to accept incoming RTSP/RTMP/HTTP streams and provide WebRTC endpoints.
+
+### 5) Worker
+
+```bash
+cd worker
+# build
+go build -o worker ./cmd/worker
+# run
+./worker --config ./config.yaml
+```
+
+Worker reads camera start/stop commands either by polling backend admin endpoints or by receiving HTTP webhook calls from backend. When started, worker opens FFmpeg->frame pipeline and performs detection.
+
+---
+
+## How it works (high level)
+
+1. User signs in via frontend -> backend issues JWT.
+2. User registers camera (RTSP URL). Backend persists camera record in MongoDB.
+3. User clicks **Start** on a camera tile -> frontend calls backend `POST /cameras/:id/start`.
+4. Backend marks the camera state and enqueues/requests the worker to start processing (HTTP POST or MQ message).
+5. Worker connects to RTSP, decodes frames, runs face detection, overlays bounding boxes, and publishes processed media to MediaMTX (or directly to a WebRTC sink).
+6. When a face is detected: worker POSTs an alert to `POST /alerts` with metadata and optionally a snapshot URL.
+7. Backend stores alert in MongoDB and broadcasts it to connected frontend clients via WebSocket.
+8. Frontend receives WebSocket events and updates the per-camera alerts list and shows overlays in the live tile.
+
+---
+
+## API overview (examples)
+
+> Base: `GET /api` or `POST /api`
+
+### Auth
+
+* `POST /api/auth/login` — body `{ username, password }` -> returns `{ token }`
+* Protected calls require `Authorization: Bearer <token>`.
+
+### Cameras
+
+* `GET /api/cameras` — list user's cameras (supports pagination, filter by enabled)
+* `POST /api/cameras` — create camera `{ name, location, rtspUrl, enabled }`
+* `GET /api/cameras/:id` — get camera
+* `PUT /api/cameras/:id` — update camera
+* `DELETE /api/cameras/:id` — delete camera
+* `POST /api/cameras/:id/start` — request worker to start processing
+* `POST /api/cameras/:id/stop` — request worker to stop processing
+* `PATCH /api/cameras/:id/detection` — toggle face detection on/off
+* `PATCH /api/cameras/:id/fps` — set target FPS for processing
+
+### Alerts
+
+* `GET /api/alerts?cameraId=&page=&limit=&from=&to=` — fetch paginated alerts
+* `POST /api/alerts` — \[worker -> backend] create an alert (protected by `ALERT_POST_AUTH_TOKEN`)
+
+---
+
+## WebSocket / Realtime events
+
+* Endpoint: `ws://<API>/ws?token=<JWT>` (or `wss://...` in prod)
+* Events sent from server to clients:
+
+  * `alert` — payload: `{ cameraId, alertId, timestamp, bbox, snapshotUrl?, meta }`
+  * `camera_state` — payload: `{ cameraId, status: "starting" | "running" | "stopped" | "error", fps }`
+
+**Frontend behavior:** subscribe to `alert` events and filter by camera IDs displayed on dashboard; show in tile notification and append to alerts list.
+
+---
+
+## Camera worker behavior & reliability
+
+* **Concurrency:** worker should support multiple streams using goroutines; target >= 4 concurrent streams.
+* **Frame pipeline:** FFmpeg (or gocv.VideoCapture) -> decode frames -> optional frame sampling (drop frames when backlog grows) -> face detection -> draw overlays -> publish.
+* **Backoff & reconnect:** on connection loss, attempt reconnects with exponential backoff (e.g., 1s, 2s, 4s, ... up to max 60s).
+* **Real-time policy:** drop processing of older frames if detection backlog grows beyond a threshold to maintain low latency.
+* **Snapshot storage:** when a face is detected, write a JPEG snapshot to local disk or S3-compatible storage and include URL in alert.
+* **Security:** worker authenticates to backend POST `/api/alerts` using a pre-shared key.
+
+---
+
+## UI features & runtime controls
+
+* **Camera tiles grid:** responsive using MUI grid + Tailwind utility classes.
+* **Per-tile controls:** Start/Stop, Toggle face-detection, Set FPS (slider), Show recent alerts (list), click alert to view snapshot.
+* **Stream states UI:** clear toasts/snackbar for starting, stopping, errors; overlayed text on video for FPS & camera id.
+* **WebRTC:** if using MediaMTX, the page uses `RTCPeerConnection` to connect to mediaMTX's WebRTC endpoint for that camera.
+
+---
+
+## Testing
+
+* Backend: use Jest or Vitest for unit tests; test auth, camera CRUD, alerts endpoint.
+* Frontend: React Testing Library for key components (camera tile, login flow, websocket handler mock).
+* Worker: unit test face-detection wrapper logic; integration tests for frame-processing pipeline are harder but valuable—use recorded sample streams.
+
+---
+
+## Deployment notes
+
+* Worker & MediaMTX should be deployed in region close to camera sources to minimize latency.
+* Use Docker for worker; multi-stage builds to include necessary FFmpeg and OpenCV runtime.
+* Run multiple worker instances for higher camera counts; use a message queue (Redis/RabbitMQ) to distribute start/stop/health commands.
+* Use TLS for websocket and API endpoints in production.
+
+---
+
+## Troubleshooting & tips
+
+* `gocv` binary errors: ensure OpenCV dev libs are installed and `CGO_ENABLED=1` during build.
+* RTSP latency: increase `-rtsp_transport tcp` in FFmpeg if experiencing packet loss.
+* Face detector false positives/negatives: tune detection parameters or use modern DNN models in OpenCV (e.g., `dnn_face_detector`) for better accuracy.
+* If MediaMTX doesn't show streams: check that worker is publishing to correct `path` and authentication (if configured).
+
+---
+
+## Roadmap / Extras
+
+* Add role-based access & per-user camera ownership.
+* Add object classification & person re-identification (person IDs, persistent tracking across cameras).
+* Add heuristics-based alert suppression (do not spam alerts repeatedly for the same person in a short window).
+* Add GPU-accelerated inference (CUDA) for higher FPS.
+
+---
+
+## License
+
+MIT
+
+---
+
+If you'd like, I can:
+
+* Generate `docker-compose.yml` for local dev (mongo + mediamtx + backend + worker + frontend).
+* Scaffold the Hono backend models (Prisma schema) for MongoDB.
+* Scaffold the React camera tile component (TypeScript + MUI) with WebRTC hookup and WebSocket handling.
+
+Tell me which one you want next and I will generate it.
