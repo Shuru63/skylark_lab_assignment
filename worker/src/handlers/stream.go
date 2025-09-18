@@ -2,8 +2,7 @@ package handlers
 
 import (
 	"net/http"
-
-	"worker/processors"
+    "worker/src/processors"
 	"github.com/gin-gonic/gin"
 )
 

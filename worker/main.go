@@ -5,8 +5,8 @@ import (
 	"os"
 	"sync"
 
-	"worker/handlers"
-	"worker/processors"
+	"worker/src/handlers"
+    "worker/src/processors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -29,9 +29,9 @@ func init() {
 	}
 
 	config = Config{
-		ServerPort: getEnv("WORKER_PORT", "3002"),
+		ServerPort: getEnv("WORKER_PORT", "9000"),
 		APIToken:   getEnv("API_TOKEN", ""),
-		APIBaseURL: getEnv("API_BASE_URL", "http://localhost:3001"),
+		APIBaseURL: getEnv("API_BASE_URL", "http://localhost:5000"),
 	}
 
 	cameraPools = make(map[string]*processors.CameraPool)
